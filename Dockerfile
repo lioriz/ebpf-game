@@ -27,6 +27,18 @@ RUN wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz && \
 
 ENV PATH="/usr/local/go/bin:$PATH"
 
+# Clone latest tagged release of BCC
+WORKDIR /tmp
+RUN git clone --depth 1 --branch $(git ls-remote --tags https://github.com/iovisor/bcc.git | \
+     grep -o 'refs/tags/v[0-9.]*$' | sort -V | tail -n1 | sed 's/refs\/tags\///') https://github.com/iovisor/bcc.git
+
+# Build BCC (only what we need)
+WORKDIR /tmp/bcc/build
+RUN cmake .. \
+    -DCMAKE_INSTALL_PREFIX=/usr && \
+    make -j$(nproc) && \
+    make install/fast
+
 WORKDIR /app
 
 COPY go.mod .
@@ -35,7 +47,7 @@ COPY main.go .
 RUN go mod tidy && go mod download
 
 RUN ls -la /usr/include
-# RUN ls -la /usr/include/bcc
+RUN ls -la /usr/include/bcc
 
 RUN go build -o ebpf-monitor main.go
 
