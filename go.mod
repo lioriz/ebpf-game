@@ -2,4 +2,4 @@ module ebpf-game
 
 go 1.21
 
-require github.com/iovisor/gobpf v0.2.0 
+require github.com/iovisor/gobpf v0.2.0

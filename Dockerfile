@@ -1,28 +1,42 @@
-FROM ubuntu:22.04
+FROM ghcr.io/iovisor/bcc:ubuntu-24.04
 
-# Install system dependencies
+RUN sed -i '/llvm-toolchain-noble-15/d' /etc/apt/sources.list /etc/apt/sources.list.d/* || true
+
+# Optional: Install Go, build tools, etc.
 RUN apt-get update && apt-get install -y \
-    golang-go \
-    bpfcc-tools \
-    linux-headers-generic \
     build-essential \
     git \
-    && rm -rf /var/lib/apt/lists/*
+    clang-17 \
+    llvm-17 \
+    llvm-17-dev \
+    llvm-17-runtime \
+    make \
+    curl \
+    libbpf-dev \
+    ca-certificates \
+    tzdata && \
+    ln -fs /usr/share/zoneinfo/$TZ /etc/localtime && \
+    dpkg-reconfigure -f noninteractive tzdata && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Install Go manually
+ENV GO_VERSION=1.21.5
+RUN wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz && \
+    tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz && \
+    rm go${GO_VERSION}.linux-amd64.tar.gz
+
+ENV PATH="/usr/local/go/bin:$PATH"
+
 WORKDIR /app
 
-# Copy go mod files first for better caching
-COPY go.mod go.sum* ./
-
-# Download Go dependencies
-RUN go mod download
-
-# Copy source code
-COPY ebpf_probe.c .
+COPY go.mod .
 COPY main.go .
 
-# Build the application
+RUN go mod tidy && go mod download
+
+RUN ls -la /usr/include
+# RUN ls -la /usr/include/bcc
+
 RUN go build -o ebpf-monitor main.go
 
 # Create a non-root user
