@@ -1,0 +1,9 @@
+services:
+  ebpf-probe:
+    build: .
+    privileged: true
+    network_mode: host
+    volumes:
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /lib/modules:/lib/modules:ro
+    restart: unless-stopped
