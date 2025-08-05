@@ -8,8 +8,8 @@ RUN apt-get update && apt-get install -y \
     linux-headers-$(uname -r) \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python BCC
-RUN pip3 install bcc
+# Install Python BCC with system packages override
+RUN pip3 install --break-system-packages bcc
 
 WORKDIR /app
 

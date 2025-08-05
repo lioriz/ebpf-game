@@ -1,6 +1,7 @@
 services:
   ebpf-probe:
     build: .
+    pid: "host"
     privileged: true
     network_mode: host
     volumes:
