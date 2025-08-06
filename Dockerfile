@@ -20,4 +20,4 @@ COPY run_probe.py .
 # Run as root (required for eBPF)
 USER root
 
-CMD ["python3", "run_probe.py"]
+CMD ["python3", "-u", "run_probe.py"]
