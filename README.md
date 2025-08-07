@@ -64,15 +64,19 @@ Each line shows:
 ```
 ebpf-game/
 ├── docker-compose.yml    # Container orchestration
-├── Dockerfile           # Container definition
+├── Dockerfile           # Multi-stage container definition
 ├── ebpf_probe.c        # eBPF C program
-├── run_probe.py        # Python loader and event handler
+├── run_probe.go        # Go loader and event handler
+├── go.mod              # Go module definition
 └── README.md           # This file
 ```
 
 ## Technical Details
 
-- **eBPF Program**: Written in C, compiled to eBPF bytecode
+- **eBPF Program**: Written in C, compiled to eBPF bytecode using bpf2go
+- **Go Implementation**: Uses `github.com/cilium/ebpf` library for modern eBPF interaction
+- **Build Process**: Multi-stage Docker build with bpf2go compilation
 - **Kernel Probes**: Uses kprobes to attach to kernel functions
 - **Event Handling**: Uses perf events for efficient data transfer
-- **Containerization**: Runs in privileged Docker container for kernel access
+- **Containerization**: Runs in minimal Alpine container for efficiency
+

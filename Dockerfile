@@ -1,23 +1,33 @@
-FROM ubuntu:24.04
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    bpfcc-tools \
-    linux-headers-$(uname -r) \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install Python BCC with system packages override
-RUN pip3 install --break-system-packages bcc
+FROM golang:1.23 AS builder
 
 WORKDIR /app
 
-# Copy files
+RUN apt-get update && apt-get install -y \
+    clang \
+    llvm \
+    libelf-dev \
+    libbpf-dev \
+    linux-headers-generic \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY ebpf_probe.c .
-COPY run_probe.py .
 
-# Run as root (required for eBPF)
-USER root
+RUN go install github.com/cilium/ebpf/cmd/bpf2go@latest
+RUN bpf2go -cc clang -cflags "-g -O2 -Wall -I/usr/include -I/usr/include/x86_64-linux-gnu" -target bpf -go-package main -output-stem ebpf_probe ebpf_probe ebpf_probe.c
 
-CMD ["python3", "-u", "run_probe.py"]
+COPY go.mod ./
+COPY run_probe.go ./
+
+RUN go mod tidy
+
+RUN head -50 ebpf_probe_bpf.go
+
+RUN CGO_ENABLED=0 GOOS=linux go build -o main .
+
+FROM alpine:latest
+
+WORKDIR /app
+
+COPY --from=builder /app/main .
+
+CMD ["./main"]
