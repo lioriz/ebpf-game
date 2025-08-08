@@ -32,53 +32,48 @@ A Go-based eBPF application that monitors system calls (`sys_read` and `sys_writ
 
 ### GET `/apis`
 List all available API endpoints and usage examples.
+```bash
+curl http://localhost:8080/apis
+```
 
-### POST `/add_pids`
-Add PIDs to the target monitoring list.
-```json
-{
-  "add_pids": [1234, 5678, 9999]
-}
+### POST `/add_pid`
+Add a PID to the target monitoring list and set print_all flag to false.
+```bash
+curl -X POST http://localhost:8080/add_pid \
+  -H "Content-Type: application/json" \
+  -d '{"pid": 1234}'
 ```
 
 ### POST `/clear_pid_list`
-Clear all target PIDs from the monitoring list.
-```json
-{
-  "clear_pid_list": true
-}
-```
-
-### POST `/print_all_pids`
-Get all currently monitored PIDs.
-```json
-{
-  "print_all_pids": true
-}
+Clear all target PIDs and set print_all flag to false.
+```bash
+curl -X POST http://localhost:8080/clear_pid_list
 ```
 
 ### POST `/set_print_all`
-Enable/disable monitoring of all PIDs (except the monitor's own PID).
-```json
-{
-  "print_all": true
-}
+Set print_all flag to true (monitor all PIDs except the monitor's own PID).
+```bash
+curl -X POST http://localhost:8080/set_print_all
 ```
 
 ### GET `/target_pids`
-Get current target PIDs from the eBPF map.
+Get current target PIDs and print_all flag state.
+```bash
+curl http://localhost:8080/target_pids
+```
 
 ## Monitoring Modes
 
 ### 1. Target List Mode (Default)
 - Only monitors PIDs in the target list
 - Initial state: empty list = no monitoring
-- Use `/add_pids` to add specific PIDs
+- Use `/add_pid` to add specific PIDs
+- Automatically sets print_all flag to false
 
 ### 2. Print All Mode
 - Monitors all PIDs except the monitor's own PID
-- Use `/set_print_all` with `{"print_all": true}`
-- Disable with `{"print_all": false}`
+- Use `/set_print_all` to enable this mode
+- Automatically sets print_all flag to true
 
 ## Building and Running
 
@@ -86,31 +81,6 @@ Get current target PIDs from the eBPF map.
 - Docker and Docker Compose
 - Linux kernel with eBPF support
 - Privileged container access
-
-### Quick Start
-```bash
-# Build and run
-docker-compose up --build
-
-# Test the API
-./test_api.sh
-```
-
-### Manual Testing
-```bash
-# Add PIDs to monitor
-curl -X POST http://localhost:8080/add_pids \
-  -H "Content-Type: application/json" \
-  -d '{"add_pids": [1234, 5678]}'
-
-# Enable print_all mode
-curl -X POST http://localhost:8080/set_print_all \
-  -H "Content-Type: application/json" \
-  -d '{"print_all": true}'
-
-# Get current target PIDs
-curl http://localhost:8080/target_pids
-```
 
 ## Technical Details
 
@@ -169,8 +139,3 @@ The application logs:
 - API server startup
 - Received API requests
 - System call events (when PIDs match criteria)
-
-## License
-
-This project uses the GPL license for eBPF components as required by the Linux kernel.
-

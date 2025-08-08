@@ -135,27 +135,47 @@ func (em *EBpfMonitor) Stop() {
 
 // AddTargetPID adds a PID to the target list
 func (em *EBpfMonitor) AddTargetPID(pid uint32) error {
+	if em.objs == nil || em.objs.TargetPids == nil {
+		return fmt.Errorf("eBPF objects not initialized")
+	}
 	return em.objs.TargetPids.Update(&pid, &pid, ebpf.UpdateAny)
 }
 
 // RemoveTargetPID removes a PID from the target list
 func (em *EBpfMonitor) RemoveTargetPID(pid uint32) error {
+	if em.objs == nil || em.objs.TargetPids == nil {
+		return fmt.Errorf("eBPF objects not initialized")
+	}
 	return em.objs.TargetPids.Delete(&pid)
 }
 
 // ClearTargetPIDs clears all target PIDs
 func (em *EBpfMonitor) ClearTargetPIDs() error {
+	if em.objs == nil || em.objs.TargetPids == nil {
+		return fmt.Errorf("eBPF objects not initialized")
+	}
+
 	// Iterate and delete all entries
 	iter := em.objs.TargetPids.Iterate()
 	var key uint32
-	for iter.Next(&key, nil) {
+	var value uint32
+	for iter.Next(&key, &value) {
 		em.objs.TargetPids.Delete(&key)
 	}
+
+	if iter.Err() != nil {
+		return fmt.Errorf("error clearing target PIDs: %v", iter.Err())
+	}
+
 	return nil
 }
 
 // SetPrintAll sets the print_all flag
 func (em *EBpfMonitor) SetPrintAll(enabled bool) error {
+	if em.objs == nil || em.objs.PrintAllFlag == nil {
+		return fmt.Errorf("eBPF objects not initialized")
+	}
+
 	flagKey := uint32(0)
 	var flagValue uint32
 	if enabled {
@@ -168,13 +188,39 @@ func (em *EBpfMonitor) SetPrintAll(enabled bool) error {
 
 // GetTargetPIDs returns all target PIDs
 func (em *EBpfMonitor) GetTargetPIDs() ([]uint32, error) {
-	var pids []uint32
+	if em.objs == nil || em.objs.TargetPids == nil {
+		return []uint32{}, fmt.Errorf("eBPF objects not initialized")
+	}
+
+	pids := make([]uint32, 0)
 	iter := em.objs.TargetPids.Iterate()
 	var key uint32
-	for iter.Next(&key, nil) {
+	var value uint32
+	for iter.Next(&key, &value) {
 		pids = append(pids, key)
 	}
+
+	if iter.Err() != nil {
+		return pids, fmt.Errorf("error iterating target PIDs: %v", iter.Err())
+	}
+
 	return pids, nil
+}
+
+// GetPrintAllState returns the current print_all flag state
+func (em *EBpfMonitor) GetPrintAllState() (bool, error) {
+	if em.objs == nil || em.objs.PrintAllFlag == nil {
+		return false, fmt.Errorf("eBPF objects not initialized")
+	}
+
+	flagKey := uint32(0)
+	var printAllFlag uint32
+	err := em.objs.PrintAllFlag.Lookup(&flagKey, &printAllFlag)
+	if err != nil {
+		return false, fmt.Errorf("failed to lookup print_all flag: %v", err)
+	}
+
+	return printAllFlag == 1, nil
 }
 
 // Application manages both eBPF monitoring and API server

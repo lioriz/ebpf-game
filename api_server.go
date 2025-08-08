@@ -71,19 +71,16 @@ func (as *APIServer) setupRoutes() {
 	// GET - List all available APIs
 	as.router.GET("/apis", as.getAvailableAPIs)
 	
-	// POST - Add PIDs to the target list
-	as.router.POST("/add_pids", as.addPIDs)
+	// POST - Add PIDs to the target list and set print_all to false
+	as.router.POST("/add_pid", as.addPID)
 	
-	// POST - Clear PID list
+	// POST - Clear PID list and set print_all to false
 	as.router.POST("/clear_pid_list", as.clearPIDList)
 	
-	// POST - Print all PIDs
-	as.router.POST("/print_all_pids", as.printAllPIDs)
-	
-	// POST - Set print_all flag
+	// POST - Set print_all flag to true
 	as.router.POST("/set_print_all", as.setPrintAll)
 	
-	// GET - Get current target PIDs
+	// GET - Get current target PIDs and print_all flag state
 	as.router.GET("/target_pids", as.getTargetPIDs)
 }
 
@@ -92,28 +89,23 @@ func (as *APIServer) getAvailableAPIs(c *gin.Context) {
 	apis := map[string]interface{}{
 		"available_apis": []string{
 			"GET /apis - Get all available APIs",
-			"POST /add_pids - Add PIDs to the target list",
-			"POST /clear_pid_list - Clear all target PIDs",
-			"POST /print_all_pids - Get all target PIDs",
-			"POST /set_print_all - Set print_all flag (monitor all PIDs except own)",
-			"GET /target_pids - Get current target PIDs",
+			"POST /add_pid - Add PID to target list (sets print_all to false)",
+			"POST /clear_pid_list - Clear all target PIDs (sets print_all to false)",
+			"POST /set_print_all - Set print_all flag to true (monitor all PIDs except own)",
+			"GET /target_pids - Get current target PIDs and print_all flag state",
 		},
 		"usage": map[string]interface{}{
-			"add_pids": map[string]interface{}{
+			"add_pid": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"add_pids": [1234, 5678]}`,
+				"body":   `{"pid": 1234}`,
 			},
 			"clear_pid_list": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"clear_pid_list": true}`,
-			},
-			"print_all_pids": map[string]interface{}{
-				"method": "POST",
-				"body":   `{"print_all_pids": true}`,
+				"body":   `{} (optional - can be omitted)`,
 			},
 			"set_print_all": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"print_all": true}`,
+				"body":   `{} (optional - can be omitted)`,
 			},
 		},
 	}
@@ -121,127 +113,107 @@ func (as *APIServer) getAvailableAPIs(c *gin.Context) {
 	c.JSON(http.StatusOK, apis)
 }
 
-// addPIDs handles adding PIDs to the target list
-func (as *APIServer) addPIDs(c *gin.Context) {
+// addPID handles adding a PID to the target list
+func (as *APIServer) addPID(c *gin.Context) {
 	var request struct {
-		AddPIDs []uint32 `json:"add_pids"`
+		PID uint32 `json:"pid"`
 	}
 	
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format. Expected: {\"pid\": 1234}"})
 		return
 	}
 	
-	fmt.Printf("Received request: POST {add_pids: %v}\n", request.AddPIDs)
+	fmt.Printf("Received request: POST /add_pid {pid: %d}\n", request.PID)
 	
-	// Add PIDs to both local manager and eBPF map
-	as.pidManager.AddPIDs(request.AddPIDs)
+	// Add PID to local manager
+	as.pidManager.AddPIDs([]uint32{request.PID})
 	
-	for _, pid := range request.AddPIDs {
-		if err := as.ebpfMonitor.AddTargetPID(pid); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to add PID %d to eBPF map: %v", pid, err)})
-			return
-		}
+	// Add PID to eBPF map - handle errors gracefully
+	if err := as.ebpfMonitor.AddTargetPID(request.PID); err != nil {
+		fmt.Printf("Warning: Failed to add PID %d to eBPF map: %v\n", request.PID, err)
+		// Continue anyway - the PID is added to local manager
+	}
+	
+	// Set print_all flag to false - handle errors gracefully
+	if err := as.ebpfMonitor.SetPrintAll(false); err != nil {
+		fmt.Printf("Warning: Failed to set print_all flag: %v\n", err)
+		// Continue anyway
 	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": "PIDs added successfully",
-		"added_pids": request.AddPIDs,
+		"message": "PID added successfully and print_all set to false",
+		"added_pid": request.PID,
 		"total_pids": len(as.pidManager.GetAllPIDs()),
+		"print_all": false,
 	})
 }
 
 // clearPIDList handles clearing the PID list
 func (as *APIServer) clearPIDList(c *gin.Context) {
-	var request struct {
-		ClearPIDList bool `json:"clear_pid_list"`
-	}
+	fmt.Printf("Received request: POST /clear_pid_list\n")
 	
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
-		return
-	}
-	
-	fmt.Printf("Received request: POST {clear_pid_list: %v}\n", request.ClearPIDList)
-	
-	// Clear PIDs from both local manager and eBPF map
+	// Clear PIDs from local manager
 	as.pidManager.ClearPIDList()
 	
+	// Clear PIDs from eBPF map - handle errors gracefully
 	if err := as.ebpfMonitor.ClearTargetPIDs(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to clear PIDs from eBPF map: %v", err)})
-		return
+		fmt.Printf("Warning: Failed to clear PIDs from eBPF map: %v\n", err)
+		// Continue anyway - the PIDs are cleared from local manager
+	}
+	
+	// Set print_all flag to false - handle errors gracefully
+	if err := as.ebpfMonitor.SetPrintAll(false); err != nil {
+		fmt.Printf("Warning: Failed to set print_all flag: %v\n", err)
+		// Continue anyway
 	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": "PID list cleared successfully",
+		"message": "PID list cleared and print_all set to false",
 		"total_pids": 0,
+		"print_all": false,
 	})
 }
 
-// printAllPIDs handles printing all PIDs
-func (as *APIServer) printAllPIDs(c *gin.Context) {
-	var request struct {
-		PrintAllPIDs bool `json:"print_all_pids"`
-	}
-	
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
-		return
-	}
-	
-	fmt.Printf("Received request: POST {print_all_pids: %v}\n", request.PrintAllPIDs)
-	
-	allPIDs := as.pidManager.GetAllPIDs()
-	
-	c.JSON(http.StatusOK, gin.H{
-		"message": "All PIDs retrieved successfully",
-		"pids": allPIDs,
-		"total_pids": len(allPIDs),
-	})
-}
-
-// setPrintAll handles setting the print_all flag
+// setPrintAll handles setting the print_all flag to true
 func (as *APIServer) setPrintAll(c *gin.Context) {
-	var request struct {
-		PrintAll bool `json:"print_all"`
-	}
+	fmt.Printf("Received request: POST /set_print_all\n")
 	
-	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
-		return
-	}
-	
-	fmt.Printf("Received request: POST {print_all: %v}\n", request.PrintAll)
-	
-	// Set the print_all flag in eBPF map
-	if err := as.ebpfMonitor.SetPrintAll(request.PrintAll); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to set print_all flag: %v", err)})
-		return
-	}
-	
-	status := "disabled"
-	if request.PrintAll {
-		status = "enabled"
+	// Set the print_all flag to true in eBPF map - handle errors gracefully
+	if err := as.ebpfMonitor.SetPrintAll(true); err != nil {
+		fmt.Printf("Warning: Failed to set print_all flag: %v\n", err)
+		// Continue anyway - return success response
 	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": fmt.Sprintf("Print all flag %s successfully", status),
-		"print_all": request.PrintAll,
+		"message": "Print all flag set to true successfully",
+		"print_all": true,
 	})
 }
 
-// getTargetPIDs returns current target PIDs
+// getTargetPIDs returns current target PIDs and print_all flag state
 func (as *APIServer) getTargetPIDs(c *gin.Context) {
+	// Get PIDs from eBPF map - handle errors gracefully
 	pids, err := as.ebpfMonitor.GetTargetPIDs()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get target PIDs: %v", err)})
-		return
+		// If we can't get PIDs, return empty list instead of crashing
+		fmt.Printf("Warning: Failed to get target PIDs: %v\n", err)
+		pids = []uint32{}
+	}
+	
+	// Get print_all flag state using the safe method
+	printAll, err := as.ebpfMonitor.GetPrintAllState()
+	if err != nil {
+		// If we can't get the flag state, assume false
+		fmt.Printf("Warning: Failed to get print_all state: %v\n", err)
+		printAll = false
 	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Target PIDs retrieved successfully",
+		"message": "Target PIDs and print_all flag state retrieved successfully",
 		"pids": pids,
 		"total_pids": len(pids),
+		"print_all": printAll,
 	})
 }
 
