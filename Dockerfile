@@ -21,14 +21,18 @@ COPY api_server.go ./
 
 RUN go mod tidy
 
-RUN head -50 ebpf_probe_bpf.go
-
 RUN CGO_ENABLED=0 GOOS=linux go build -o main .
 
-FROM alpine:latest
+FROM debian:bullseye-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 COPY --from=builder /app/main .
+
+EXPOSE 8080
 
 CMD ["./main"]

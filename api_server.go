@@ -8,58 +8,58 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// IPManager handles IP list operations
-type IPManager struct {
-	ips  []int
+// PIDManager handles PID list operations
+type PIDManager struct {
+	pids []uint32
 	mu   sync.RWMutex
-	port string
 }
 
-// NewIPManager creates a new IP manager instance
-func NewIPManager(port string) *IPManager {
-	return &IPManager{
-		ips:  make([]int, 0),
-		port: port,
+// NewPIDManager creates a new PID manager instance
+func NewPIDManager() *PIDManager {
+	return &PIDManager{
+		pids: make([]uint32, 0),
 	}
 }
 
-// AddIPs adds IPs to the list
-func (im *IPManager) AddIPs(newIPs []int) {
-	im.mu.Lock()
-	defer im.mu.Unlock()
-	im.ips = append(im.ips, newIPs...)
+// AddPIDs adds PIDs to the list
+func (pm *PIDManager) AddPIDs(newPIDs []uint32) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.pids = append(pm.pids, newPIDs...)
 }
 
-// ClearIPList clears all IPs
-func (im *IPManager) ClearIPList() {
-	im.mu.Lock()
-	defer im.mu.Unlock()
-	im.ips = make([]int, 0)
+// ClearPIDList clears all PIDs
+func (pm *PIDManager) ClearPIDList() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.pids = make([]uint32, 0)
 }
 
-// GetAllIPs returns all IPs
-func (im *IPManager) GetAllIPs() []int {
-	im.mu.RLock()
-	defer im.mu.RUnlock()
-	return append([]int{}, im.ips...)
+// GetAllPIDs returns all PIDs
+func (pm *PIDManager) GetAllPIDs() []uint32 {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return append([]uint32{}, pm.pids...)
 }
 
 // APIServer handles HTTP API requests
 type APIServer struct {
-	ipManager *IPManager
-	router    *gin.Engine
-	port      string
+	pidManager  *PIDManager
+	ebpfMonitor *EBpfMonitor
+	router      *gin.Engine
+	port        string
 }
 
 // NewAPIServer creates a new API server instance
-func NewAPIServer(port string) *APIServer {
-	ipManager := NewIPManager(port)
+func NewAPIServer(port string, ebpfMonitor *EBpfMonitor) *APIServer {
+	pidManager := NewPIDManager()
 	router := gin.Default()
 	
 	server := &APIServer{
-		ipManager: ipManager,
-		router:    router,
-		port:      port,
+		pidManager:  pidManager,
+		ebpfMonitor: ebpfMonitor,
+		router:      router,
+		port:        port,
 	}
 	
 	server.setupRoutes()
@@ -71,14 +71,20 @@ func (as *APIServer) setupRoutes() {
 	// GET - List all available APIs
 	as.router.GET("/apis", as.getAvailableAPIs)
 	
-	// POST - Add IPs to the list
-	as.router.POST("/add_ips", as.addIPs)
+	// POST - Add PIDs to the target list
+	as.router.POST("/add_pids", as.addPIDs)
 	
-	// POST - Clear IP list
-	as.router.POST("/clear_ip_list", as.clearIPList)
+	// POST - Clear PID list
+	as.router.POST("/clear_pid_list", as.clearPIDList)
 	
-	// POST - Print all IPs
-	as.router.POST("/print_all_ips", as.printAllIPs)
+	// POST - Print all PIDs
+	as.router.POST("/print_all_pids", as.printAllPIDs)
+	
+	// POST - Set print_all flag
+	as.router.POST("/set_print_all", as.setPrintAll)
+	
+	// GET - Get current target PIDs
+	as.router.GET("/target_pids", as.getTargetPIDs)
 }
 
 // getAvailableAPIs returns all available API endpoints
@@ -86,22 +92,28 @@ func (as *APIServer) getAvailableAPIs(c *gin.Context) {
 	apis := map[string]interface{}{
 		"available_apis": []string{
 			"GET /apis - Get all available APIs",
-			"POST /add_ips - Add IPs to the list",
-			"POST /clear_ip_list - Clear all IPs",
-			"POST /print_all_ips - Print all IPs",
+			"POST /add_pids - Add PIDs to the target list",
+			"POST /clear_pid_list - Clear all target PIDs",
+			"POST /print_all_pids - Get all target PIDs",
+			"POST /set_print_all - Set print_all flag (monitor all PIDs except own)",
+			"GET /target_pids - Get current target PIDs",
 		},
 		"usage": map[string]interface{}{
-			"add_ips": map[string]interface{}{
+			"add_pids": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"add_ips": [1,2,3]}`,
+				"body":   `{"add_pids": [1234, 5678]}`,
 			},
-			"clear_ip_list": map[string]interface{}{
+			"clear_pid_list": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"clear_ip_list": true}`,
+				"body":   `{"clear_pid_list": true}`,
 			},
-			"print_all_ips": map[string]interface{}{
+			"print_all_pids": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"print_all_ips": true}`,
+				"body":   `{"print_all_pids": true}`,
+			},
+			"set_print_all": map[string]interface{}{
+				"method": "POST",
+				"body":   `{"print_all": true}`,
 			},
 		},
 	}
@@ -109,10 +121,10 @@ func (as *APIServer) getAvailableAPIs(c *gin.Context) {
 	c.JSON(http.StatusOK, apis)
 }
 
-// addIPs handles adding IPs to the list
-func (as *APIServer) addIPs(c *gin.Context) {
+// addPIDs handles adding PIDs to the target list
+func (as *APIServer) addPIDs(c *gin.Context) {
 	var request struct {
-		AddIPs []int `json:"add_ips"`
+		AddPIDs []uint32 `json:"add_pids"`
 	}
 	
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -120,21 +132,29 @@ func (as *APIServer) addIPs(c *gin.Context) {
 		return
 	}
 	
-	fmt.Printf("Received request: POST {add_ips: %v}\n", request.AddIPs)
+	fmt.Printf("Received request: POST {add_pids: %v}\n", request.AddPIDs)
 	
-	as.ipManager.AddIPs(request.AddIPs)
+	// Add PIDs to both local manager and eBPF map
+	as.pidManager.AddPIDs(request.AddPIDs)
+	
+	for _, pid := range request.AddPIDs {
+		if err := as.ebpfMonitor.AddTargetPID(pid); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to add PID %d to eBPF map: %v", pid, err)})
+			return
+		}
+	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": "IPs added successfully",
-		"added_ips": request.AddIPs,
-		"total_ips": len(as.ipManager.GetAllIPs()),
+		"message": "PIDs added successfully",
+		"added_pids": request.AddPIDs,
+		"total_pids": len(as.pidManager.GetAllPIDs()),
 	})
 }
 
-// clearIPList handles clearing the IP list
-func (as *APIServer) clearIPList(c *gin.Context) {
+// clearPIDList handles clearing the PID list
+func (as *APIServer) clearPIDList(c *gin.Context) {
 	var request struct {
-		ClearIPList bool `json:"clear_ip_list"`
+		ClearPIDList bool `json:"clear_pid_list"`
 	}
 	
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -142,20 +162,26 @@ func (as *APIServer) clearIPList(c *gin.Context) {
 		return
 	}
 	
-	fmt.Printf("Received request: POST {clear_ip_list: %v}\n", request.ClearIPList)
+	fmt.Printf("Received request: POST {clear_pid_list: %v}\n", request.ClearPIDList)
 	
-	as.ipManager.ClearIPList()
+	// Clear PIDs from both local manager and eBPF map
+	as.pidManager.ClearPIDList()
+	
+	if err := as.ebpfMonitor.ClearTargetPIDs(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to clear PIDs from eBPF map: %v", err)})
+		return
+	}
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": "IP list cleared successfully",
-		"total_ips": 0,
+		"message": "PID list cleared successfully",
+		"total_pids": 0,
 	})
 }
 
-// printAllIPs handles printing all IPs
-func (as *APIServer) printAllIPs(c *gin.Context) {
+// printAllPIDs handles printing all PIDs
+func (as *APIServer) printAllPIDs(c *gin.Context) {
 	var request struct {
-		PrintAllIPs bool `json:"print_all_ips"`
+		PrintAllPIDs bool `json:"print_all_pids"`
 	}
 	
 	if err := c.ShouldBindJSON(&request); err != nil {
@@ -163,14 +189,59 @@ func (as *APIServer) printAllIPs(c *gin.Context) {
 		return
 	}
 	
-	fmt.Printf("Received request: POST {print_all_ips: %v}\n", request.PrintAllIPs)
+	fmt.Printf("Received request: POST {print_all_pids: %v}\n", request.PrintAllPIDs)
 	
-	allIPs := as.ipManager.GetAllIPs()
+	allPIDs := as.pidManager.GetAllPIDs()
 	
 	c.JSON(http.StatusOK, gin.H{
-		"message": "All IPs retrieved successfully",
-		"ips": allIPs,
-		"total_ips": len(allIPs),
+		"message": "All PIDs retrieved successfully",
+		"pids": allPIDs,
+		"total_pids": len(allPIDs),
+	})
+}
+
+// setPrintAll handles setting the print_all flag
+func (as *APIServer) setPrintAll(c *gin.Context) {
+	var request struct {
+		PrintAll bool `json:"print_all"`
+	}
+	
+	if err := c.ShouldBindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format"})
+		return
+	}
+	
+	fmt.Printf("Received request: POST {print_all: %v}\n", request.PrintAll)
+	
+	// Set the print_all flag in eBPF map
+	if err := as.ebpfMonitor.SetPrintAll(request.PrintAll); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to set print_all flag: %v", err)})
+		return
+	}
+	
+	status := "disabled"
+	if request.PrintAll {
+		status = "enabled"
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message": fmt.Sprintf("Print all flag %s successfully", status),
+		"print_all": request.PrintAll,
+	})
+}
+
+// getTargetPIDs returns current target PIDs
+func (as *APIServer) getTargetPIDs(c *gin.Context) {
+	pids, err := as.ebpfMonitor.GetTargetPIDs()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to get target PIDs: %v", err)})
+		return
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Target PIDs retrieved successfully",
+		"pids": pids,
+		"total_pids": len(pids),
 	})
 }
 

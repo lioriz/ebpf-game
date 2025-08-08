@@ -43,10 +43,20 @@ func NewEBpfMonitor() (*EBpfMonitor, error) {
 		return nil, fmt.Errorf("failed to set skip PID: %v", err)
 	}
 
+	// Initialize print_all flag to 0 (disabled)
+	flagKey := uint32(0)
+	flagValue := uint32(0)
+	err = objs.PrintAllFlag.Update(&flagKey, &flagValue, ebpf.UpdateAny)
+	if err != nil {
+		objs.Close()
+		return nil, fmt.Errorf("failed to initialize print_all flag: %v", err)
+	}
+
 	fmt.Println("Loading eBPF program")
 	fmt.Println("Monitoring sys_read and sys_write calls...")
 	fmt.Printf("Host PID: %d\n", pid)
 	fmt.Printf("Skipping self PID: %d\n", pid)
+	fmt.Println("Initial state: No PIDs in target list, print_all disabled")
 
 	// Attach kprobes
 	readLink, err := link.Kprobe("__x64_sys_read", objs.SysReadCall, nil)
@@ -123,6 +133,50 @@ func (em *EBpfMonitor) Stop() {
 	}
 }
 
+// AddTargetPID adds a PID to the target list
+func (em *EBpfMonitor) AddTargetPID(pid uint32) error {
+	return em.objs.TargetPids.Update(&pid, &pid, ebpf.UpdateAny)
+}
+
+// RemoveTargetPID removes a PID from the target list
+func (em *EBpfMonitor) RemoveTargetPID(pid uint32) error {
+	return em.objs.TargetPids.Delete(&pid)
+}
+
+// ClearTargetPIDs clears all target PIDs
+func (em *EBpfMonitor) ClearTargetPIDs() error {
+	// Iterate and delete all entries
+	iter := em.objs.TargetPids.Iterate()
+	var key uint32
+	for iter.Next(&key, nil) {
+		em.objs.TargetPids.Delete(&key)
+	}
+	return nil
+}
+
+// SetPrintAll sets the print_all flag
+func (em *EBpfMonitor) SetPrintAll(enabled bool) error {
+	flagKey := uint32(0)
+	var flagValue uint32
+	if enabled {
+		flagValue = 1
+	} else {
+		flagValue = 0
+	}
+	return em.objs.PrintAllFlag.Update(&flagKey, &flagValue, ebpf.UpdateAny)
+}
+
+// GetTargetPIDs returns all target PIDs
+func (em *EBpfMonitor) GetTargetPIDs() ([]uint32, error) {
+	var pids []uint32
+	iter := em.objs.TargetPids.Iterate()
+	var key uint32
+	for iter.Next(&key, nil) {
+		pids = append(pids, key)
+	}
+	return pids, nil
+}
+
 // Application manages both eBPF monitoring and API server
 type Application struct {
 	ebpfMonitor *EBpfMonitor
@@ -138,7 +192,7 @@ func NewApplication(apiPort string) (*Application, error) {
 	}
 
 	// Initialize API server
-	apiServer := NewAPIServer(apiPort)
+	apiServer := NewAPIServer(apiPort, ebpfMonitor)
 
 	return &Application{
 		ebpfMonitor: ebpfMonitor,
