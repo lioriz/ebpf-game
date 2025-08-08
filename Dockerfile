@@ -17,6 +17,7 @@ RUN bpf2go -cc clang -cflags "-g -O2 -Wall -I/usr/include -I/usr/include/x86_64-
 
 COPY go.mod ./
 COPY run_probe.go ./
+COPY api_server.go ./
 
 RUN go mod tidy
 
