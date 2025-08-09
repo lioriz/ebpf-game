@@ -13,20 +13,52 @@ A Go-based eBPF application that monitors system calls (`sys_read` and `sys_writ
 
 ### Components
 
-1. **eBPF Monitor** (`run_probe.go`):
+1. **eBPF Monitor** (`ebpf_monitor.go`):
    - Loads and manages eBPF programs
-   - Handles system call monitoring
+   - Handles system call monitoring (kprobes + perf)
    - Manages target PID list and print_all flag
 
-2. **API Server** (`api_server.go`):
-   - REST API for PID management
-   - Thread-safe PID operations
-   - Integration with eBPF monitor
+2. **Queue App** (`read_write_monitor.go`):
+   - Reads commands from a queue and updates the eBPF monitor
+   - Ensures ordered, single-writer updates to eBPF maps
+   - Exposes helpers to query current state
 
-3. **eBPF Program** (`ebpf_probe.c`):
+3. **API Server** (`api_server.go`):
+   - Enqueues commands into the queue on POST endpoints
+   - Reads current state via the queue app for GET endpoints
+
+4. **Application Wiring** (`application.go`):
+   - Creates the shared command queue
+   - Wires `EBpfMonitor`, `ReadWriteMonitorApp`, and `APIServer`
+   - Starts/stops components
+
+5. **Entrypoint** (`main.go`):
+   - Minimal main: boot, start, wait for signal, shutdown
+
+6. **eBPF Program** (`ebpf_probe.c`):
    - Kernel-level system call monitoring
    - Dynamic PID filtering logic
    - Perf event output for userspace communication
+
+### File Structure
+```
+ebpf-game/
+├── main.go                  # Entrypoint
+├── application.go           # App wiring (monitor + queue app + API)
+├── ebpf_monitor.go          # eBPF monitor (load, attach, maps, perf)
+├── read_write_monitor.go    # Queue-driven coordinator calling eBPF
+├── api_server.go            # REST API (enqueues; reads state via app)
+├── ebpf_probe.c             # eBPF C program
+├── go.mod                   # Go module definition
+├── Dockerfile               # Multi-stage build
+├── docker-compose.yml       # Container orchestration
+└── README.md                # This file
+```
+
+Notes:
+- Go bindings for the eBPF program are generated at build time by `bpf2go`.
+- The server does not mutate eBPF directly; it only enqueues commands.
+- The queue app is the single writer to eBPF maps, preventing races.
 
 ## API Endpoints
 
