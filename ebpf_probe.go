@@ -1,11 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"errors"
 	"os"
 	"strings"
-	"unsafe"
-	"bytes"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -34,7 +34,7 @@ type EBpfProbe struct {
 	stopCh    chan struct{}
 }
 
-func findSyscallSymbol(base string) (string, error) {
+func findSyscallSymbol(base string, logger Logger) (string, error) {
     candidates := []string{
         "__x64_sys_" + base,
         "__arm64_sys_" + base,
@@ -47,6 +47,7 @@ func findSyscallSymbol(base string) (string, error) {
     }
     for _, cand := range candidates {
         if bytes.Contains(data, []byte(cand)) {
+			logger.Infof("Found syscall symbol: %s", cand)
             return cand, nil
         }
     }
@@ -87,8 +88,14 @@ func NewEBpfProbe(logger Logger) (*EBpfProbe, error) {
 	logger.Infof("Skipping self PID: %d", pid)
 	logger.Infof("Initial state: No PIDs in target list, print_all disabled")
 
-	readSym, _ := findSyscallSymbol("read")
-	writeSym, _ := findSyscallSymbol("write")
+	readSym, _ := findSyscallSymbol("read", logger)
+	if readSym == "" {
+		return nil, errors.New("no read syscall symbol found")
+	}
+	writeSym, _ := findSyscallSymbol("write", logger)
+	if writeSym == "" {
+		return nil, errors.New("no write syscall symbol found")
+	}
 
 	// Attach kprobes
 	readLink, err := link.Kprobe(readSym, objs.SysReadCall, nil)
@@ -106,8 +113,8 @@ func NewEBpfProbe(logger Logger) (*EBpfProbe, error) {
 		return nil, errors.New("failed to attach sys_write kprobe: " + err.Error())
 	}
 
-	// Set up perf buffer
-	rd, err := perf.NewReader(objs.Events, 4096)
+	// Set up perf buffer (increase size to reduce drops)
+	rd, err := perf.NewReader(objs.Events, 1<<18) // 256KB
 	if err != nil {
 		readLink.Close()
 		writeLink.Close()
@@ -152,9 +159,11 @@ func (em *EBpfProbe) Start() {
 				continue
 			}
 
-			var event Data
 			if len(record.RawSample) >= 8 { // sizeof(Data)
-				copy((*[8]byte)(unsafe.Pointer(&event))[:], record.RawSample[:8])
+				var event Data
+				event.Pid = binary.LittleEndian.Uint32(record.RawSample[0:4])
+				event.EventType = binary.LittleEndian.Uint32(record.RawSample[4:8])
+
 				switch event.EventType {
 				case evtRead:
 					em.logger.Infof("%d - hello sys_read was called", event.Pid)

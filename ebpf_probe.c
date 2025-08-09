@@ -70,17 +70,21 @@ int handle_sys_call(struct pt_regs *ctx, u32 event_type)
     struct data_t data = {};
     data.pid = pid;
     data.event_type = event_type;
-    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &data, sizeof(data));
+    int ret = bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &data, sizeof(data));
+    if (ret) {
+        // optional: inc_dropped();
+        return 0;
+    }
     return 0;
 }
 
-SEC("kprobe/__x64_sys_read")
+SEC("kprobe/sys_read")
 int sys_read_call(struct pt_regs *ctx)
 {
     return handle_sys_call(ctx, EVT_READ);
 }
 
-SEC("kprobe/__x64_sys_write")
+SEC("kprobe/sys_read")
 int sys_write_call(struct pt_regs *ctx)
 {
     return handle_sys_call(ctx, EVT_WRITE);
