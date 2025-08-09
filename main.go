@@ -1,24 +1,27 @@
 package main
 
 import (
-	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 )
 
 func main() {
+	// Create logger (stdout + rotating file as example)
+	logger := NewStdoutAndFileLogger(10, 5, 7, false)
+
 	// Create application
-	app, err := NewApplication("8080")
+	app, err := NewApplication("8080", logger)
 	if err != nil {
-		log.Fatalf("Failed to create application: %v", err)
+		logger.Errorf("Failed to create application: %v", err)
+		os.Exit(1)
 	}
 	defer app.Stop()
 
 	// Start application
 	if err := app.Start(); err != nil {
-		log.Fatalf("Failed to start application: %v", err)
+		logger.Errorf("Failed to start application: %v", err)
+		os.Exit(1)
 	}
 
 	// Wait for interrupt signal
@@ -26,5 +29,5 @@ func main() {
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 	<-sig
 
-	fmt.Println("Exiting...")
+	logger.Infof("Exiting...")
 } 

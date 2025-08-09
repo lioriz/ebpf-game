@@ -16,11 +16,8 @@ RUN go install github.com/cilium/ebpf/cmd/bpf2go@latest
 RUN bpf2go -cc clang -cflags "-g -O2 -Wall -I/usr/include -I/usr/include/x86_64-linux-gnu" -target bpf -go-package main -output-stem ebpf_probe ebpf_probe ebpf_probe.c
 
 COPY go.mod ./
-COPY ebpf_probe.go ./
-COPY ebpf_monitor.go ./
-COPY api_server.go ./
-COPY application.go ./
-COPY main.go ./
+# Copy all Go sources to ensure types like Logger and controllers are included
+COPY *.go ./
 
 RUN go mod tidy
 

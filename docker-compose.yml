@@ -7,4 +7,5 @@ services:
     volumes:
       - /sys/kernel/debug:/sys/kernel/debug
       - /lib/modules:/lib/modules:ro
+      - /var/log/ebpf-game:/var/log/ebpf-game
     restart: unless-stopped

@@ -1,52 +1,54 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"errors"
 )
 
 // Application manages eBPF monitoring, the command-processing app, and the API server.
 type Application struct {
-	ebpfMonitor *EBpfMonitor
-	app        *ReadWriteMonitorApp
-	cmdCh      chan MonitorCommand
-	apiServer  *APIServer
+	logger         Logger
+	ebpfProbe      *EBpfProbe
+	ebpfController *EBpfController
+	cmdCh          chan MonitorCommand
+	apiServer      *APIServer
 }
 
 // NewApplication creates a new application instance
-func NewApplication(apiPort string) (*Application, error) {
+func NewApplication(apiPort string, logger Logger) (*Application, error) {
 	// Initialize eBPF monitor
-	ebpfMonitor, err := NewEBpfMonitor()
+	ebpfProbe, err := NewEBpfProbe(logger)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create eBPF monitor: %v", err)
+		logger.Errorf("failed to create eBPF monitor: %v", err)
+		return nil, errors.New("failed to create eBPF monitor: " + err.Error())
 	}
 
 	// Shared command queue
 	cmdCh := make(chan MonitorCommand, 256)
 
-	// Initialize app (reads from queue and controls eBPF)
-	appCore := NewReadWriteMonitorApp(ebpfMonitor, cmdCh)
+	// Initialize controller (reads from queue and controls eBPF)
+	ebpfController := NewEBpfController(logger, ebpfProbe, cmdCh)
 
-	// Initialize API server (enqueues to queue, queries via app)
-	apiServer := NewAPIServer(apiPort, cmdCh, appCore)
+	// Initialize API server (enqueues to queue, queries via controller)
+	apiServer := NewAPIServer(apiPort, logger, cmdCh, ebpfController)
 
 	return &Application{
-		ebpfMonitor: ebpfMonitor,
-		app:        appCore,
-		cmdCh:      cmdCh,
-		apiServer:  apiServer,
+		logger:         logger,
+		ebpfProbe:      ebpfProbe,
+		ebpfController: ebpfController,
+		cmdCh:          cmdCh,
+		apiServer:      apiServer,
 	}, nil
 }
 
 // Start begins both eBPF monitoring and API server
 func (app *Application) Start() error {
 	// Start eBPF monitoring
-	app.ebpfMonitor.Start()
+	app.ebpfProbe.Start()
 
 	// Start API server in a goroutine
 	go func() {
 		if err := app.apiServer.Start(); err != nil {
-			log.Printf("API Server error: %v", err)
+			app.logger.Errorf("API Server error: %v", err)
 		}
 	}()
 
@@ -55,10 +57,10 @@ func (app *Application) Start() error {
 
 // Stop cleans up all resources
 func (app *Application) Stop() {
-	if app.app != nil {
-		app.app.Stop()
+	if app.ebpfController != nil {
+		app.ebpfController.Stop()
 	}
-	if app.ebpfMonitor != nil {
-		app.ebpfMonitor.Stop()
+	if app.ebpfProbe != nil {
+		app.ebpfProbe.Stop()
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"sync"
 
@@ -44,22 +43,24 @@ func (pm *PIDManager) GetAllPIDs() []uint32 {
 
 // APIServer handles HTTP API requests
 type APIServer struct {
+	logger    Logger
 	pidManager *PIDManager
 	cmdCh      chan MonitorCommand
-	app        *ReadWriteMonitorApp
+	ebpfController        *EBpfController
 	router     *gin.Engine
 	port       string
 }
 
 // NewAPIServer creates a new API server instance
-func NewAPIServer(port string, cmdCh chan MonitorCommand, app *ReadWriteMonitorApp) *APIServer {
+func NewAPIServer(port string, logger Logger, cmdCh chan MonitorCommand, ebpfController *EBpfController) *APIServer {
 	pidManager := NewPIDManager()
 	router := gin.Default()
 
 	server := &APIServer{
+		logger:    logger,
 		pidManager: pidManager,
 		cmdCh:      cmdCh,
-		app:        app,
+		ebpfController:        ebpfController,
 		router:     router,
 		port:       port,
 	}
@@ -126,7 +127,7 @@ func (as *APIServer) addPID(c *gin.Context) {
 		return
 	}
 
-	fmt.Printf("Received request: POST /add_pid {pid: %d}\n", request.PID)
+	as.logger.Infof("Received request: POST /add_pid {pid: %d}", request.PID)
 
 	// Add PID to local manager
 	as.pidManager.AddPIDs([]uint32{request.PID})
@@ -135,7 +136,7 @@ func (as *APIServer) addPID(c *gin.Context) {
 	select {
 	case as.cmdCh <- MonitorCommand{Kind: CommandAddPID, PID: request.PID}:
 	default:
-		fmt.Printf("Warning: command queue full, dropping AddPID(%d)\n", request.PID)
+		as.logger.Warnf("command queue full, dropping AddPID(%d)", request.PID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -148,7 +149,7 @@ func (as *APIServer) addPID(c *gin.Context) {
 
 // clearPIDList handles clearing the PID list
 func (as *APIServer) clearPIDList(c *gin.Context) {
-	fmt.Printf("Received request: POST /clear_pid_list\n")
+	as.logger.Infof("Received request: POST /clear_pid_list")
 
 	// Clear PIDs from local manager
 	as.pidManager.ClearPIDList()
@@ -157,7 +158,7 @@ func (as *APIServer) clearPIDList(c *gin.Context) {
 	select {
 	case as.cmdCh <- MonitorCommand{Kind: CommandClearPIDs}:
 	default:
-		fmt.Printf("Warning: command queue full, dropping ClearPIDs\n")
+		as.logger.Warnf("command queue full, dropping ClearPIDs")
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -169,13 +170,13 @@ func (as *APIServer) clearPIDList(c *gin.Context) {
 
 // setPrintAll handles setting the print_all flag to true
 func (as *APIServer) setPrintAll(c *gin.Context) {
-	fmt.Printf("Received request: POST /set_print_all\n")
+	as.logger.Infof("Received request: POST /set_print_all")
 
 	// Enqueue set_print_all
 	select {
 	case as.cmdCh <- MonitorCommand{Kind: CommandSetPrintAll, PrintAll: true}:
 	default:
-		fmt.Printf("Warning: command queue full, dropping SetPrintAll(true)\n")
+		as.logger.Warnf("command queue full, dropping SetPrintAll(true)")
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -186,16 +187,16 @@ func (as *APIServer) setPrintAll(c *gin.Context) {
 
 // getTargetPIDs returns current target PIDs and print_all flag state
 func (as *APIServer) getTargetPIDs(c *gin.Context) {
-	// Use the app (which queries EBpfMonitor)
-	pids, err := as.app.GetTargetPIDs()
+	// Use the ebpfController (which queries EBpfMonitor)
+	pids, err := as.ebpfController.GetTargetPIDs()
 	if err != nil {
-		fmt.Printf("Warning: Failed to get target PIDs: %v\n", err)
+		as.logger.Warnf("Failed to get target PIDs: %v", err)
 		pids = []uint32{}
 	}
 
-	printAll, err := as.app.GetPrintAllState()
+	printAll, err := as.ebpfController.GetPrintAllState()
 	if err != nil {
-		fmt.Printf("Warning: Failed to get print_all state: %v\n", err)
+		as.logger.Warnf("Failed to get print_all state: %v", err)
 		printAll = false
 	}
 
@@ -209,7 +210,7 @@ func (as *APIServer) getTargetPIDs(c *gin.Context) {
 
 // Start starts the API server
 func (as *APIServer) Start() error {
-	fmt.Printf("API Server starting on localhost:%s\n", as.port)
+	as.logger.Infof("API Server starting on localhost:%s", as.port)
 	return as.router.Run(":" + as.port)
 }
 

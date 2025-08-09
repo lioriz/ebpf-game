@@ -1,9 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"errors"
 	"os"
+	"strings"
 	"unsafe"
 
 	"github.com/cilium/ebpf"
@@ -23,20 +23,23 @@ const (
 	evtWrite = 2
 )
 
-// EBpfMonitor handles eBPF monitoring
-type EBpfMonitor struct {
+// EBpfProbe handles eBPF monitoring
+type EBpfProbe struct {
 	objs      *ebpf_probeObjects
 	readLink  link.Link
 	writeLink link.Link
 	rd        *perf.Reader
+	logger    Logger
+	stopCh    chan struct{}
 }
 
-// NewEBpfMonitor creates a new eBPF monitor instance
-func NewEBpfMonitor() (*EBpfMonitor, error) {
+// NewEBpfProbe creates a new eBPF monitor instance
+func NewEBpfProbe(logger Logger) (*EBpfProbe, error) {
 	// Load the eBPF program
 	objs := ebpf_probeObjects{}
 	if err := loadEbpf_probeObjects(&objs, nil); err != nil {
-		return nil, fmt.Errorf("failed to load eBPF objects: %v", err)
+		logger.Errorf("failed to load eBPF objects: %v", err)
+		return nil, errors.New("failed to load eBPF objects: " + err.Error())
 	}
 
 	// Skip this PID
@@ -44,7 +47,8 @@ func NewEBpfMonitor() (*EBpfMonitor, error) {
 	err := objs.SkipPid.Update(&pid, &pid, ebpf.UpdateAny)
 	if err != nil {
 		objs.Close()
-		return nil, fmt.Errorf("failed to set skip PID: %v", err)
+		logger.Errorf("failed to set skip PID: %v", err)
+		return nil, errors.New("failed to set skip PID: " + err.Error())
 	}
 
 	// Initialize print_all flag to 0 (disabled)
@@ -53,27 +57,30 @@ func NewEBpfMonitor() (*EBpfMonitor, error) {
 	err = objs.PrintAllFlag.Update(&flagKey, &flagValue, ebpf.UpdateAny)
 	if err != nil {
 		objs.Close()
-		return nil, fmt.Errorf("failed to initialize print_all flag: %v", err)
+		logger.Errorf("failed to initialize print_all flag: %v", err)
+		return nil, errors.New("failed to initialize print_all flag: " + err.Error())
 	}
 
-	fmt.Println("Loading eBPF program")
-	fmt.Println("Monitoring sys_read and sys_write calls...")
-	fmt.Printf("Host PID: %d\n", pid)
-	fmt.Printf("Skipping self PID: %d\n", pid)
-	fmt.Println("Initial state: No PIDs in target list, print_all disabled")
+	logger.Infof("Loading eBPF program")
+	logger.Infof("Monitoring sys_read and sys_write calls...")
+	logger.Infof("Host PID: %d", pid)
+	logger.Infof("Skipping self PID: %d", pid)
+	logger.Infof("Initial state: No PIDs in target list, print_all disabled")
 
 	// Attach kprobes
 	readLink, err := link.Kprobe("__x64_sys_read", objs.SysReadCall, nil)
 	if err != nil {
 		objs.Close()
-		return nil, fmt.Errorf("failed to attach sys_read kprobe: %v", err)
+		logger.Errorf("failed to attach sys_read kprobe: %v", err)
+		return nil, errors.New("failed to attach sys_read kprobe: " + err.Error())
 	}
 
 	writeLink, err := link.Kprobe("__x64_sys_write", objs.SysWriteCall, nil)
 	if err != nil {
 		readLink.Close()
 		objs.Close()
-		return nil, fmt.Errorf("failed to attach sys_write kprobe: %v", err)
+		logger.Errorf("failed to attach sys_write kprobe: %v", err)
+		return nil, errors.New("failed to attach sys_write kprobe: " + err.Error())
 	}
 
 	// Set up perf buffer
@@ -82,33 +89,43 @@ func NewEBpfMonitor() (*EBpfMonitor, error) {
 		readLink.Close()
 		writeLink.Close()
 		objs.Close()
-		return nil, fmt.Errorf("failed to create perf reader: %v", err)
+		logger.Errorf("failed to create perf reader: %v", err)
+		return nil, errors.New("failed to create perf reader: " + err.Error())
 	}
 
-	return &EBpfMonitor{
+	return &EBpfProbe{
 		objs:      &objs,
 		readLink:  readLink,
 		writeLink: writeLink,
 		rd:        rd,
+		logger:    logger,
+		stopCh:    make(chan struct{}),
 	}, nil
 }
 
 // Start begins monitoring
-func (em *EBpfMonitor) Start() {
+func (em *EBpfProbe) Start() {
 	// Handle events
 	go func() {
 		for {
+			select {
+			case <-em.stopCh:
+				return
+			default:
+			}
+
 			record, err := em.rd.Read()
 			if err != nil {
-				if err == perf.ErrClosed {
+				// During shutdown, the reader may return various "file already closed" errors.
+				if errors.Is(err, perf.ErrClosed) || errors.Is(err, os.ErrClosed) || strings.Contains(err.Error(), "file already closed") {
 					return
 				}
-				log.Printf("Error reading perf event: %v", err)
+				em.logger.Errorf("Error reading perf event: %v", err)
 				continue
 			}
 
 			if record.LostSamples != 0 {
-				log.Printf("Lost %d samples", record.LostSamples)
+				em.logger.Warnf("Lost %d samples", record.LostSamples)
 				continue
 			}
 
@@ -117,11 +134,11 @@ func (em *EBpfMonitor) Start() {
 				copy((*[8]byte)(unsafe.Pointer(&event))[:], record.RawSample[:8])
 				switch event.EventType {
 				case evtRead:
-					fmt.Printf("%d - hello sys_read was called\n", event.Pid)
+					em.logger.Infof("%d - hello sys_read was called", event.Pid)
 				case evtWrite:
-					fmt.Printf("%d - hello sys_write was called\n", event.Pid)
+					em.logger.Infof("%d - hello sys_write was called", event.Pid)
 				default:
-					fmt.Printf("%d - unknown event %d\n", event.Pid, event.EventType)
+					em.logger.Infof("%d - unknown event %d", event.Pid, event.EventType)
 				}
 			}
 		}
@@ -129,7 +146,14 @@ func (em *EBpfMonitor) Start() {
 }
 
 // Stop cleans up resources
-func (em *EBpfMonitor) Stop() {
+func (em *EBpfProbe) Stop() {
+	// Signal loop to stop before closing underlying resources
+	select {
+	case <-em.stopCh:
+		// already closed
+	default:
+		close(em.stopCh)
+	}
 	if em.rd != nil {
 		em.rd.Close()
 	}
@@ -145,25 +169,28 @@ func (em *EBpfMonitor) Stop() {
 }
 
 // AddTargetPID adds a PID to the target list
-func (em *EBpfMonitor) AddTargetPID(pid uint32) error {
+func (em *EBpfProbe) AddTargetPID(pid uint32) error {
 	if em.objs == nil || em.objs.TargetPids == nil {
-		return fmt.Errorf("eBPF objects not initialized")
+		em.logger.Errorf("eBPF objects not initialized")
+		return errors.New("eBPF objects not initialized")
 	}
 	return em.objs.TargetPids.Update(&pid, &pid, ebpf.UpdateAny)
 }
 
 // RemoveTargetPID removes a PID from the target list
-func (em *EBpfMonitor) RemoveTargetPID(pid uint32) error {
+func (em *EBpfProbe) RemoveTargetPID(pid uint32) error {
 	if em.objs == nil || em.objs.TargetPids == nil {
-		return fmt.Errorf("eBPF objects not initialized")
+		em.logger.Errorf("eBPF objects not initialized")
+		return errors.New("eBPF objects not initialized")
 	}
 	return em.objs.TargetPids.Delete(&pid)
 }
 
 // ClearTargetPIDs clears all target PIDs
-func (em *EBpfMonitor) ClearTargetPIDs() error {
+func (em *EBpfProbe) ClearTargetPIDs() error {
 	if em.objs == nil || em.objs.TargetPids == nil {
-		return fmt.Errorf("eBPF objects not initialized")
+		em.logger.Errorf("eBPF objects not initialized")
+		return errors.New("eBPF objects not initialized")
 	}
 
 	// Iterate and delete all entries
@@ -175,16 +202,18 @@ func (em *EBpfMonitor) ClearTargetPIDs() error {
 	}
 
 	if iter.Err() != nil {
-		return fmt.Errorf("error clearing target PIDs: %v", iter.Err())
+		em.logger.Errorf("error clearing target PIDs: %v", iter.Err())
+		return errors.New("error clearing target PIDs: " + iter.Err().Error())
 	}
 
 	return nil
 }
 
 // SetPrintAll sets the print_all flag
-func (em *EBpfMonitor) SetPrintAll(enabled bool) error {
+func (em *EBpfProbe) SetPrintAll(enabled bool) error {
 	if em.objs == nil || em.objs.PrintAllFlag == nil {
-		return fmt.Errorf("eBPF objects not initialized")
+		em.logger.Errorf("eBPF objects not initialized")
+		return errors.New("eBPF objects not initialized")
 	}
 
 	flagKey := uint32(0)
@@ -198,9 +227,10 @@ func (em *EBpfMonitor) SetPrintAll(enabled bool) error {
 }
 
 // GetTargetPIDs returns all target PIDs
-func (em *EBpfMonitor) GetTargetPIDs() ([]uint32, error) {
+func (em *EBpfProbe) GetTargetPIDs() ([]uint32, error) {
 	if em.objs == nil || em.objs.TargetPids == nil {
-		return []uint32{}, fmt.Errorf("eBPF objects not initialized")
+		em.logger.Errorf("eBPF objects not initialized")
+		return []uint32{}, errors.New("eBPF objects not initialized")
 	}
 
 	pids := make([]uint32, 0)
@@ -212,23 +242,25 @@ func (em *EBpfMonitor) GetTargetPIDs() ([]uint32, error) {
 	}
 
 	if iter.Err() != nil {
-		return pids, fmt.Errorf("error iterating target PIDs: %v", iter.Err())
+		em.logger.Errorf("error iterating target PIDs: %v", iter.Err())
+		return pids, errors.New("error iterating target PIDs: " + iter.Err().Error())
 	}
 
 	return pids, nil
 }
 
 // GetPrintAllState returns the current print_all flag state
-func (em *EBpfMonitor) GetPrintAllState() (bool, error) {
+func (em *EBpfProbe) GetPrintAllState() (bool, error) {
 	if em.objs == nil || em.objs.PrintAllFlag == nil {
-		return false, fmt.Errorf("eBPF objects not initialized")
+		em.logger.Errorf("eBPF objects not initialized")
+		return false, errors.New("eBPF objects not initialized")
 	}
 
 	flagKey := uint32(0)
 	var printAllFlag uint32
-	err := em.objs.PrintAllFlag.Lookup(&flagKey, &printAllFlag)
-	if err != nil {
-		return false, fmt.Errorf("failed to lookup print_all flag: %v", err)
+	if err := em.objs.PrintAllFlag.Lookup(&flagKey, &printAllFlag); err != nil {
+		em.logger.Errorf("failed to lookup print_all flag: %v", err)
+		return false, errors.New("failed to lookup print_all flag: " + err.Error())
 	}
 
 	return printAllFlag == 1, nil
