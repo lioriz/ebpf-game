@@ -75,7 +75,7 @@ func (as *APIServer) setupRoutes() {
 	as.router.GET("/apis", as.getAvailableAPIs)
 
 	// POST - Add PIDs to the target list and set print_all to false
-	as.router.POST("/add_pid", as.addPID)
+	as.router.POST("/add_pids", as.addPIDs)
 
 	// POST - Clear PID list and set print_all to false
 	as.router.POST("/clear_pid_list", as.clearPIDList)
@@ -92,15 +92,15 @@ func (as *APIServer) getAvailableAPIs(c *gin.Context) {
 	apis := map[string]interface{}{
 		"available_apis": []string{
 			"GET /apis - Get all available APIs",
-			"POST /add_pid - Add PID to target list (sets print_all to false)",
+			"POST /add_pids - Add PIDs to target list (sets print_all to false)",
 			"POST /clear_pid_list - Clear all target PIDs (sets print_all to false)",
 			"POST /set_print_all - Set print_all flag to true (monitor all PIDs except own)",
 			"GET /target_pids - Get current target PIDs and print_all flag state",
 		},
 		"usage": map[string]interface{}{
-			"add_pid": map[string]interface{}{
+			"add_pids": map[string]interface{}{
 				"method": "POST",
-				"body":   `{"pid": 1234}`,
+				"body":   `{"pids": [1234, 5678]}`,
 			},
 			"clear_pid_list": map[string]interface{}{
 				"method": "POST",
@@ -116,32 +116,38 @@ func (as *APIServer) getAvailableAPIs(c *gin.Context) {
 	c.JSON(http.StatusOK, apis)
 }
 
-// addPID handles adding a PID to the target list
-func (as *APIServer) addPID(c *gin.Context) {
+// addPIDs handles adding PIDs to the target list
+func (as *APIServer) addPIDs(c *gin.Context) {
 	var request struct {
-		PID uint32 `json:"pid"`
+		PIDs []uint32 `json:"pids"`
 	}
 
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format. Expected: {\"pid\": 1234}"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON format. Expected: {\"pids\": [1234, 5678]}"})
+		return
+	}
+	if len(request.PIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Field 'pids' must contain at least one PID"})
 		return
 	}
 
-	as.logger.Infof("Received request: POST /add_pid {pid: %d}", request.PID)
+	as.logger.Infof("Received request: POST /add_pids {pids: %v}", request.PIDs)
 
-	// Add PID to local manager
-	as.pidManager.AddPIDs([]uint32{request.PID})
+	// Add PIDs to local manager
+	as.pidManager.AddPIDs(request.PIDs)
 
-	// Enqueue add pid
-	select {
-	case as.cmdCh <- MonitorCommand{Kind: CommandAddPID, PID: request.PID}:
-	default:
-		as.logger.Warnf("command queue full, dropping AddPID(%d)", request.PID)
+	// Enqueue each PID
+	for _, pid := range request.PIDs {
+		select {
+		case as.cmdCh <- MonitorCommand{Kind: CommandAddPID, PID: pid}:
+		default:
+			as.logger.Warnf("command queue full, dropping AddPID(%d)", pid)
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "PID enqueued for add; print_all set to false",
-		"added_pid": request.PID,
+		"message": "PIDs enqueued for add; print_all set to false",
+		"added_pids": request.PIDs,
 		"total_pids": len(as.pidManager.GetAllPIDs()),
 		"print_all": false,
 	})
@@ -187,7 +193,7 @@ func (as *APIServer) setPrintAll(c *gin.Context) {
 
 // getTargetPIDs returns current target PIDs and print_all flag state
 func (as *APIServer) getTargetPIDs(c *gin.Context) {
-	// Use the ebpfController (which queries EBpfMonitor)
+	// Use the ebpfController (which queries EBpfProbe)
 	pids, err := as.ebpfController.GetTargetPIDs()
 	if err != nil {
 		as.logger.Warnf("Failed to get target PIDs: %v", err)
