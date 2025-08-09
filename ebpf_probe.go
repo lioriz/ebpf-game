@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"unsafe"
+	"bytes"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -31,6 +32,25 @@ type EBpfProbe struct {
 	rd        *perf.Reader
 	logger    Logger
 	stopCh    chan struct{}
+}
+
+func findSyscallSymbol(base string) (string, error) {
+    candidates := []string{
+        "__x64_sys_" + base,
+        "__arm64_sys_" + base,
+        "__arm_sys_" + base,
+        "sys_" + base,
+    }
+    data, err := os.ReadFile("/proc/kallsyms")
+    if err != nil {
+        return "", err
+    }
+    for _, cand := range candidates {
+        if bytes.Contains(data, []byte(cand)) {
+            return cand, nil
+        }
+    }
+    return "", errors.New("no matching syscall symbol found for " + base)
 }
 
 // NewEBpfProbe creates a new eBPF monitor instance
@@ -67,15 +87,18 @@ func NewEBpfProbe(logger Logger) (*EBpfProbe, error) {
 	logger.Infof("Skipping self PID: %d", pid)
 	logger.Infof("Initial state: No PIDs in target list, print_all disabled")
 
+	readSym, _ := findSyscallSymbol("read")
+	writeSym, _ := findSyscallSymbol("write")
+
 	// Attach kprobes
-	readLink, err := link.Kprobe("__x64_sys_read", objs.SysReadCall, nil)
+	readLink, err := link.Kprobe(readSym, objs.SysReadCall, nil)
 	if err != nil {
 		objs.Close()
 		logger.Errorf("failed to attach sys_read kprobe: %v", err)
 		return nil, errors.New("failed to attach sys_read kprobe: " + err.Error())
 	}
 
-	writeLink, err := link.Kprobe("__x64_sys_write", objs.SysWriteCall, nil)
+	writeLink, err := link.Kprobe(writeSym, objs.SysWriteCall, nil)
 	if err != nil {
 		readLink.Close()
 		objs.Close()
