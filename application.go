@@ -3,15 +3,14 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 )
 
-// Application manages both eBPF monitoring and API server
+// Application manages eBPF monitoring, the command-processing app, and the API server.
 type Application struct {
 	ebpfMonitor *EBpfMonitor
-	apiServer   *APIServer
+	app        *ReadWriteMonitorApp
+	cmdCh      chan MonitorCommand
+	apiServer  *APIServer
 }
 
 // NewApplication creates a new application instance
@@ -22,12 +21,20 @@ func NewApplication(apiPort string) (*Application, error) {
 		return nil, fmt.Errorf("failed to create eBPF monitor: %v", err)
 	}
 
-	// Initialize API server
-	apiServer := NewAPIServer(apiPort, ebpfMonitor)
+	// Shared command queue
+	cmdCh := make(chan MonitorCommand, 256)
+
+	// Initialize app (reads from queue and controls eBPF)
+	appCore := NewReadWriteMonitorApp(ebpfMonitor, cmdCh)
+
+	// Initialize API server (enqueues to queue, queries via app)
+	apiServer := NewAPIServer(apiPort, cmdCh, appCore)
 
 	return &Application{
 		ebpfMonitor: ebpfMonitor,
-		apiServer:   apiServer,
+		app:        appCore,
+		cmdCh:      cmdCh,
+		apiServer:  apiServer,
 	}, nil
 }
 
@@ -48,28 +55,10 @@ func (app *Application) Start() error {
 
 // Stop cleans up all resources
 func (app *Application) Stop() {
+	if app.app != nil {
+		app.app.Stop()
+	}
 	if app.ebpfMonitor != nil {
 		app.ebpfMonitor.Stop()
 	}
 }
-
-func main() {
-	// Create application
-	app, err := NewApplication("8080")
-	if err != nil {
-		log.Fatalf("Failed to create application: %v", err)
-	}
-	defer app.Stop()
-
-	// Start application
-	if err := app.Start(); err != nil {
-		log.Fatalf("Failed to start application: %v", err)
-	}
-
-	// Wait for interrupt signal
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
-
-	fmt.Println("Exiting...")
-} 
