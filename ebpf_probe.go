@@ -12,10 +12,16 @@ import (
 )
 
 // Data structure matching the C struct
+// struct data_t { u32 pid; u32 event_type; } in ebpf_probe.c
 type Data struct {
-	Pid uint32
-	Msg [32]byte
+	Pid       uint32
+	EventType uint32
 }
+
+const (
+	evtRead  = 1
+	evtWrite = 2
+)
 
 // EBpfMonitor handles eBPF monitoring
 type EBpfMonitor struct {
@@ -107,9 +113,16 @@ func (em *EBpfMonitor) Start() {
 			}
 
 			var event Data
-			if len(record.RawSample) >= 36 { // sizeof(Data)
-				copy((*[36]byte)(unsafe.Pointer(&event))[:], record.RawSample[:36])
-				fmt.Printf("%d - %s\n", event.Pid, string(event.Msg[:]))
+			if len(record.RawSample) >= 8 { // sizeof(Data)
+				copy((*[8]byte)(unsafe.Pointer(&event))[:], record.RawSample[:8])
+				switch event.EventType {
+				case evtRead:
+					fmt.Printf("%d - hello sys_read was called\n", event.Pid)
+				case evtWrite:
+					fmt.Printf("%d - hello sys_write was called\n", event.Pid)
+				default:
+					fmt.Printf("%d - unknown event %d\n", event.Pid, event.EventType)
+				}
 			}
 		}
 	}()
